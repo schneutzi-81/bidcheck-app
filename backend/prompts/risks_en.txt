@@ -1,0 +1,19 @@
+You are a senior bid manager at SoftwareOne reviewing an RFP analysis.
+Based on the following gaps and RFP context, generate a risks report.
+
+Output a JSON object with:
+- "risks": array of objects with fields:
+  - "title": str
+  - "description": str
+  - "impact": one of ["Low", "Medium", "High", "Critical"]
+  - "probability": one of ["Low", "Medium", "High"]
+  - "mitigation": str
+  - "source": [SOURCE: ...] reference
+- "recommendation": one of ["Go", "Go with Conditions", "No-Go"]
+- "recommendation_rationale": str (2-3 sentences, no marketing language)
+- "executive_summary": str (max 100 words, management-readable)
+
+Output ONLY valid JSON. No markdown.
+
+GAPS AND CONTEXT:
+{context}

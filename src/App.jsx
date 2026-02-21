@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { AlertTriangle, CheckCircle, XCircle, HelpCircle, ChevronRight, ChevronDown, Bot, User, Building2, Target, Briefcase, CheckSquare, FileText, TrendingUp, Zap, Download, Save, Send, Info, Sparkles, Database, Clock, Euro, Shield, Lightbulb, Edit3, RefreshCw, Upload, File, X, Loader2, CheckCheck, AlertCircle, BookOpen, ExternalLink, Quote, FileSearch, ChevronLeft, Highlighter, ThumbsUp, ThumbsDown, MessageSquare } from 'lucide-react';
+import { api } from './api/client';
+import ProjectSetup from './components/ProjectSetup';
+import AnalysisPanel from './components/AnalysisPanel';
 
 // Evidence Reading Panel Component
 function EvidencePanel({ isOpen, onClose, evidence, onConfirm, onReject }) {
@@ -295,9 +298,58 @@ function RFPUploader({ opportunityInfo, onAnalysisComplete, onOpenEvidence }) {
     return '📎';
   };
 
+  const runAnalysis = async () => {
+    if (files.length === 0 || !opportunityInfo._projectId) return;
+    setAnalysisStatus('uploading');
+    setAnalysisProgress(10);
+    try {
+      // Upload each file sequentially
+      for (let i = 0; i < files.length; i++) {
+        await api.uploadDocument(opportunityInfo._projectId, files[i].file);
+        setAnalysisProgress(Math.round(((i + 1) / files.length) * 60));
+      }
+      setAnalysisStatus('analyzing');
+      setAnalysisProgress(80);
+
+      // Poll until all docs are ready (max 60s)
+      let attempts = 0;
+      while (attempts < 30) {
+        await new Promise(r => setTimeout(r, 2000));
+        const docs = await api.listDocuments(opportunityInfo._projectId);
+        const allDone = docs.every(d => d.status === 'ready' || d.status === 'error');
+        if (allDone) break;
+        attempts++;
+      }
+      setAnalysisProgress(100);
+      setAnalysisStatus('complete');
+
+      const pagesProcessed = await api.listDocuments(opportunityInfo._projectId)
+        .then(docs => docs.reduce((s, d) => s + d.page_count, 0));
+
+      const results = {
+        documentsAnalyzed: files.length,
+        pagesProcessed,
+        extractedRequirements: 0,
+        keyFindings: [
+          { type: 'success', text: `${files.length} document(s) uploaded and indexed successfully` },
+          { type: 'info',    text: 'Use the AI Analysis panel below to extract requirements, risks, and SOW' },
+        ],
+        suggestedAnswers: {},
+      };
+      setAnalysisResults(results);
+      if (onAnalysisComplete) onAnalysisComplete({ answers: {}, explanations: {}, evidence: {} });
+      return;
+    } catch (e) {
+      setAnalysisStatus('error');
+      setAnalysisResults({ error: e.message });
+      return;
+    }
+  };
+
   const simulateAnalysis = () => {
     if (files.length === 0) return;
-    
+    if (opportunityInfo._projectId) { runAnalysis(); return; }
+
     setAnalysisStatus('uploading');
     setAnalysisProgress(0);
 
@@ -953,6 +1005,19 @@ export default function GoNoGoApp() {
   const [filterOwner, setFilterOwner] = useState('All');
   const [showAIOnly, setShowAIOnly] = useState(false);
 
+  // Backend project state
+  const [project, setProject] = useState(null); // { customer, project }
+
+  const handleProjectReady = ({ customer, project: proj }) => {
+    setProject({ customer, project: proj });
+    // Pre-fill opportunity info from project
+    setOpportunityInfo(prev => ({
+      ...prev,
+      customer: customer.name,
+      name: proj.name,
+    }));
+  };
+
   // Get field label by ID
   const getFieldLabel = (fieldId) => {
     for (const fields of Object.values(FIELDS)) {
@@ -1195,6 +1260,17 @@ export default function GoNoGoApp() {
       </header>
 
       <main className="relative max-w-7xl mx-auto px-6 py-8">
+        {/* Project Setup — creates backend project */}
+        {!project && (
+          <ProjectSetup onProjectReady={handleProjectReady} />
+        )}
+        {project && (
+          <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-sm text-emerald-300">
+            <CheckCircle className="w-4 h-4 flex-shrink-0" />
+            Project: <span className="font-semibold">{project.project.name}</span> &nbsp;·&nbsp; Customer: {project.customer.name} &nbsp;·&nbsp; Lang: {project.project.language}
+          </div>
+        )}
+
         {/* Opportunity Info Card */}
         <div className="mb-8 p-6 rounded-3xl bg-gradient-to-br from-slate-800/40 to-slate-900/40 border border-slate-700/50 backdrop-blur-sm">
           <div className="flex items-center gap-3 mb-5">
@@ -1254,8 +1330,8 @@ export default function GoNoGoApp() {
             </div>
           </div>
           
-          <RFPUploader 
-            opportunityInfo={opportunityInfo}
+          <RFPUploader
+            opportunityInfo={{ ...opportunityInfo, _projectId: project?.project?.id }}
             onAnalysisComplete={(results) => {
               setAnswers(prev => ({ ...prev, ...results.answers }));
               setAiExplanations(prev => ({ ...prev, ...results.explanations }));
@@ -1263,6 +1339,14 @@ export default function GoNoGoApp() {
             }}
           />
         </div>
+
+        {/* AI Analysis Panel — shown once a project exists */}
+        {project && (
+          <AnalysisPanel
+            projectId={project.project.id}
+            projectName={project.project.name}
+          />
+        )}
 
         {/* Evidence Review Panel */}
         <EvidencePanel

@@ -35,50 +35,103 @@ A Go/No-Go decision support tool for bid qualification at SoftwareOne.
   - Filter by: Sales, Presales, Delivery, Finance, Legal, Sales Leader
   - AI-automatable field highlighting
 
-## Getting Started
+## Quick Start
 
 ### Prerequisites
 
-- Node.js 18+ 
-- npm or yarn
+- Node.js 18+
+- Python 3.10+
+- Azure OpenAI resource with:
+  - GPT-4o deployment
+  - text-embedding-3-large deployment
 
-### Installation
+### 1 — Backend
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/bidcheck.git
-cd bidcheck
+cd backend
 
-# Install dependencies
+# Copy and fill in your Azure credentials
+cp .env.example .env
+# Edit .env with your AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, etc.
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Start the API server (port 8000)
+uvicorn main:app --reload
+```
+
+API docs available at `http://localhost:8000/docs`
+
+### 2 — Frontend
+
+```bash
+# From the repo root
 npm install
 
-# Start development server
+# Start dev server (uses backend at http://localhost:8000 by default)
 npm run dev
 ```
 
-The app will be available at `http://localhost:5173`
+App available at `http://localhost:5173`
+
+### 3 — End-to-End Test (optional)
+
+```bash
+cd backend
+python test_e2e.py /path/to/sample.pdf
+```
+
+Runs the full pipeline: create project → upload PDF → poll ready → Q&A + analysis → pricing → cleanup.
 
 ### Build for Production
 
 ```bash
-npm run build
+npm run build          # Frontend → dist/
+uvicorn main:app       # Backend — no --reload in production
 ```
+
+---
 
 ## Project Structure
 
 ```
 bidcheck/
-├── public/
-│   └── favicon.svg
 ├── src/
-│   ├── App.jsx          # Main application component
-│   ├── main.jsx         # React entry point
-│   └── index.css        # Global styles & Tailwind
+│   ├── App.jsx               # Main application + Go/No-Go scoring
+│   ├── api/client.js         # Fetch-based API client
+│   └── components/
+│       ├── ProjectSetup.jsx  # Customer + project creation form
+│       └── AnalysisPanel.jsx # 6-tab AI analysis panel
+├── backend/
+│   ├── main.py               # FastAPI entry point + CORS
+│   ├── config.py             # Settings (pydantic-settings)
+│   ├── models.py             # SQLModel DB tables
+│   ├── database.py           # SQLite engine + session dep
+│   ├── requirements.txt
+│   ├── .env.example
+│   ├── test_e2e.py           # End-to-end test script
+│   ├── routers/
+│   │   ├── projects.py       # Customer + Project CRUD
+│   │   ├── documents.py      # PDF upload + status
+│   │   ├── chat.py           # Cited Q&A
+│   │   ├── analysis.py       # Gaps / Risks / SOW / Summary
+│   │   └── pricing.py        # 3-scenario pricing calculator
+│   ├── services/
+│   │   ├── ingestion.py      # PyMuPDF → chunks → LlamaIndex
+│   │   ├── retrieval.py      # Vector similarity search
+│   │   └── generation.py     # GPT-4o generation + JSON parsing
+│   └── prompts/
+│       ├── gaps_en.txt / gaps_de.txt
+│       ├── risks_en.txt / risks_de.txt
+│       ├── sow_en.txt / sow_de.txt
+│       └── summary_en.txt / summary_de.txt
+├── public/
 ├── index.html
 ├── package.json
 ├── vite.config.js
 ├── tailwind.config.js
-└── postcss.config.js
+└── LIMITATIONS.md
 ```
 
 ## Configuration
@@ -123,12 +176,35 @@ Edit the `FIELDS` object in `src/App.jsx` to add or modify criteria:
 
 ## Roadmap
 
-- [ ] Backend API integration
-- [ ] Real AI/ML document analysis
-- [ ] PDF export
-- [ ] Database persistence
+### Prototype Sprint — Backend + AI Pipeline
+
+- [x] **TASK 0** — Audit existing project structure
+- [x] **TASK 1** — Scaffold Python FastAPI backend (`backend/` folder, routers, services, prompts)
+- [x] **TASK 2** — Install dependencies (`requirements.txt`) and configure Azure OpenAI environment variables
+- [x] **TASK 3** — Database models (Customer, Project, Document) + SQLite setup + `GET /health`
+- [x] **TASK 4** — Customer and Project CRUD API (create, list, get, delete with cleanup)
+- [x] **TASK 5** — PDF upload and ingestion pipeline (PyMuPDF → chunking → embeddings → LlamaIndex per-project vector store)
+- [x] **TASK 6** — Cited Q&A endpoint (`POST /projects/{id}/chat`) — answers strictly from uploaded docs with `[SOURCE: filename, page N]` citations
+- [x] **TASK 7** — Prompt templates (DE + EN) for gap detection, risk analysis, SOW drafting, and business case summary
+- [x] **TASK 8** — Analysis endpoints: `/gaps`, `/risks`, `/sow`, `/summary` — all backed by GPT-4o + retrieved context
+- [x] **TASK 9** — Pricing calculation endpoint (pure Python, 3 scenarios: low / base / high with risk buffer)
+- [x] **TASK 10** — Connect React frontend to backend API (`src/api/client.js`, replace mock data, loading + error states)
+- [x] **TASK 11** — End-to-end test script (`backend/test_e2e.py`) — full pipeline with a real PDF
+- [x] **TASK 12** — Final cleanup: `README.md`, `LIMITATIONS.md`, `.gitignore`
+
+### Stack for Prototype
+- Backend: Python FastAPI + SQLModel + SQLite
+- AI: Azure OpenAI GPT-4o (generation) + text-embedding-3-large (embeddings)
+- RAG: LlamaIndex (local vector store, per-project)
+- Languages: DE and EN (all outputs preserve source language)
+
+### Post-Prototype Backlog
+
+- [ ] PDF export of SOW and business case summary
 - [ ] User authentication
 - [ ] Approval workflow
+- [ ] PostgreSQL (replace SQLite for multi-user)
+- [ ] Retry logic and rate limit handling for Azure OpenAI
 - [ ] CRM integration (Salesforce)
 - [ ] HR system integration (certifications)
 - [ ] Resource planner integration

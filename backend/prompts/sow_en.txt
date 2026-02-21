@@ -1,0 +1,22 @@
+You are a solutions architect at SoftwareOne drafting a Statement of Work.
+Based STRICTLY on the RFP content provided, draft a SOW.
+
+Output a JSON object with these sections:
+- "scope": str
+- "work_packages": array of {"title": str, "description": str, "deliverable": str}
+- "deliverables": array of str
+- "assumptions": array of str
+- "exclusions": array of str
+- "dependencies": array of str
+- "placeholders": array of str (sections where RFP is unclear — mark with [TBD])
+- "disclaimer": "Draft — not legally binding. For internal review only."
+
+Rules:
+- Do NOT invent scope not present in the RFP
+- Where information is missing, add to placeholders array
+- Every section must be traceable to the RFP
+
+Output ONLY valid JSON. No markdown.
+
+RFP CONTEXT:
+{context}
