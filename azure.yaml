@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: bidcheck-app
+metadata:
+  template: bidcheck-app@0.0.1-beta
+
+services:
+  backend:
+    project: ./backend
+    language: py
+    host: containerapp
+    docker:
+      path: ./backend/Dockerfile
+      context: ./backend
+
+  frontend:
+    project: .
+    language: js
+    host: staticwebapp
+    dist: dist

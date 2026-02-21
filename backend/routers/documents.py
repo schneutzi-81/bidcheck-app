@@ -84,7 +84,8 @@ async def upload_document(
 
     # Save file to storage
     os.makedirs(settings.storage_path, exist_ok=True)
-    stored_filename = f"{project_id}_{file.filename}"
+    safe_name = os.path.basename(file.filename)
+    stored_filename = f"{project_id}_{safe_name}"
     file_path = os.path.join(settings.storage_path, stored_filename)
 
     async with aiofiles.open(file_path, "wb") as f:
@@ -95,7 +96,7 @@ async def upload_document(
     doc = Document(
         project_id=project_id,
         filename=stored_filename,
-        original_name=file.filename,
+        original_name=safe_name,
         status="processing",
     )
     session.add(doc)
@@ -104,7 +105,7 @@ async def upload_document(
 
     # Run ingestion in background
     background_tasks.add_task(
-        _run_ingestion, doc.id, file_path, file.filename, project_id
+        _run_ingestion, doc.id, file_path, safe_name, project_id
     )
 
     return DocumentResponse(**doc.model_dump())

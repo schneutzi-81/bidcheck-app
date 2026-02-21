@@ -1,0 +1,9 @@
+{
+  "resourcesResourceGroups": "rg-",
+  "containerRegistryRegistries": "cr",
+  "cognitiveServicesAccounts": "oai",
+  "storageStorageAccounts": "st",
+  "webStaticSites": "swa",
+  "appManagedEnvironments": "cae-",
+  "appContainerApps": "ca-"
+}
