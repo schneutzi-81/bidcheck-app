@@ -35,3 +35,18 @@ coverage/
 # Misc
 *.log
 .cache/
+
+# Backend — secrets and generated data
+backend/.env
+backend/bidcheck.db
+backend/storage/
+backend/indexes/
+backend/__pycache__/
+backend/**/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Backend — virtual environment
+backend/venv/
