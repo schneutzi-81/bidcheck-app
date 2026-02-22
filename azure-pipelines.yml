@@ -1,0 +1,225 @@
+# ============================================================================
+# BidCheck — Azure Pipelines CI/CD
+#
+# Triggers on every push to main.
+# Stages:
+#   1. test    — structural e2e test (no Azure keys required)
+#   2. build   — Docker image → Azure Container Registry
+#   3. deploy  — Container Apps (backend) + Static Web Apps (frontend)
+#
+# ONE-TIME SETUP (do this once in Azure DevOps before first run):
+# ─────────────────────────────────────────────────────────────────
+# 1. Create a Service Connection:
+#    Project Settings → Service connections → New → Azure Resource Manager
+#    Name it exactly:  AzureServiceConnection
+#    Scope:            Subscription (grant access to your resource group)
+#
+# 2. Add these Pipeline Variables (Pipelines → your pipeline → Edit → Variables):
+#
+#    AZURE_RESOURCE_GROUP      rg-bidcheck-dev              (your resource group name)
+#    ACR_NAME                  cr<token>                    (your ACR name, no .azurecr.io)
+#    CONTAINER_APP_NAME        backend                      (Container App name)
+#    BACKEND_URL               https://<app>.<region>.azurecontainerapps.io
+#    SWA_DEPLOYMENT_TOKEN      <token>                      (from SWA → Manage token) ★ secret
+#
+# ★ Mark SWA_DEPLOYMENT_TOKEN as secret (lock icon) so it is not logged.
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  IMAGE_NAME: bidcheck-backend
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+# ─────────────────────────────────────────────────────────────────────────────
+stages:
+
+# ── STAGE 1: Structural test ──────────────────────────────────────────────────
+- stage: Test
+  displayName: 'Test — structural e2e'
+  jobs:
+  - job: StructuralTest
+    displayName: 'Run structural e2e (no Azure creds)'
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: $(PYTHON_VERSION)
+      displayName: 'Set Python $(PYTHON_VERSION)'
+
+    - script: |
+        cd backend
+        pip install --quiet -r requirements.txt
+      displayName: 'Install Python dependencies'
+
+    - script: |
+        cd backend
+        uvicorn main:app --port 8000 &
+        sleep 5
+        curl -sf http://localhost:8000/health || (echo "Backend failed to start" && exit 1)
+        echo "Backend healthy"
+      displayName: 'Start backend + health check'
+
+    - script: |
+        cd backend
+        # Create a minimal test PDF so the structural path is exercised
+        python3 -c "
+        import fitz, tempfile, os
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), 'Test RFP document for CI pipeline structural test.')
+        path = '/tmp/ci_test.pdf'
+        doc.save(path)
+        print(f'Created test PDF: {path}')
+        "
+        python3 test_e2e.py /tmp/ci_test.pdf
+      displayName: 'Run e2e structural test'
+      env:
+        AZURE_OPENAI_ENDPOINT: https://placeholder.openai.azure.com/
+        AZURE_OPENAI_API_KEY: placeholder
+        AZURE_OPENAI_API_VERSION: 2024-08-01-preview
+        AZURE_OPENAI_DEPLOYMENT_GPT4O: gpt-4o
+        AZURE_OPENAI_DEPLOYMENT_EMBEDDING: text-embedding-3-large
+
+# ── STAGE 2: Build ────────────────────────────────────────────────────────────
+- stage: Build
+  displayName: 'Build — Docker image + frontend'
+  dependsOn: Test
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+
+  - job: BuildBackend
+    displayName: 'Build & push Docker image to ACR'
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: AzureCLI@2
+      displayName: 'Build & push image to ACR'
+      inputs:
+        azureSubscription: AzureServiceConnection
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+
+          IMAGE_TAG=$(echo "$(Build.SourceVersion)" | cut -c1-8)
+          FULL_IMAGE="$(ACR_NAME).azurecr.io/$(IMAGE_NAME):${IMAGE_TAG}"
+          LATEST_IMAGE="$(ACR_NAME).azurecr.io/$(IMAGE_NAME):latest"
+
+          echo "Building image: $FULL_IMAGE"
+
+          az acr build \
+            --registry $(ACR_NAME) \
+            --image "$(IMAGE_NAME):${IMAGE_TAG}" \
+            --image "$(IMAGE_NAME):latest" \
+            --file backend/Dockerfile \
+            backend/
+
+          echo "##vso[task.setvariable variable=IMAGE_TAG;isOutput=true]${IMAGE_TAG}"
+          echo "##vso[task.setvariable variable=FULL_IMAGE;isOutput=true]${FULL_IMAGE}"
+    name: BuildStep
+
+  - job: BuildFrontend
+    displayName: 'Build React frontend'
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+
+    - task: UseNode@1
+      inputs:
+        version: $(NODE_VERSION)
+      displayName: 'Set Node $(NODE_VERSION)'
+
+    - script: npm ci
+      displayName: 'npm ci'
+
+    - script: npm run build
+      displayName: 'npm run build'
+      env:
+        VITE_API_URL: $(BACKEND_URL)
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish frontend artifact'
+      inputs:
+        targetPath: dist
+        artifact: frontend-dist
+
+# ── STAGE 3: Deploy ───────────────────────────────────────────────────────────
+- stage: Deploy
+  displayName: 'Deploy — Container Apps + Static Web Apps'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+
+  - deployment: DeployBackend
+    displayName: 'Deploy backend to Container Apps'
+    pool:
+      vmImage: ubuntu-latest
+    environment: production
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: AzureCLI@2
+            displayName: 'Update Container App image'
+            inputs:
+              azureSubscription: AzureServiceConnection
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                IMAGE_TAG=$(echo "$(Build.SourceVersion)" | cut -c1-8)
+                FULL_IMAGE="$(ACR_NAME).azurecr.io/$(IMAGE_NAME):${IMAGE_TAG}"
+
+                echo "Deploying image: $FULL_IMAGE"
+
+                az containerapp update \
+                  --name $(CONTAINER_APP_NAME) \
+                  --resource-group $(AZURE_RESOURCE_GROUP) \
+                  --image "$FULL_IMAGE"
+
+                # Wait for the new revision to be healthy
+                az containerapp revision list \
+                  --name $(CONTAINER_APP_NAME) \
+                  --resource-group $(AZURE_RESOURCE_GROUP) \
+                  --query "[0].{name:name, state:properties.healthState}" \
+                  --output table
+
+                echo "Backend deployed: $FULL_IMAGE"
+
+  - deployment: DeployFrontend
+    displayName: 'Deploy frontend to Static Web Apps'
+    pool:
+      vmImage: ubuntu-latest
+    environment: production
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download frontend artifact'
+            inputs:
+              artifact: frontend-dist
+              path: $(Pipeline.Workspace)/dist
+
+          - task: AzureStaticWebApp@0
+            displayName: 'Deploy to Static Web Apps'
+            inputs:
+              app_location: '$(Pipeline.Workspace)/dist'
+              skip_app_build: true
+              azure_static_web_apps_api_token: $(SWA_DEPLOYMENT_TOKEN)

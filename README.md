@@ -35,60 +35,167 @@ A Go/No-Go decision support tool for bid qualification at SoftwareOne.
   - Filter by: Sales, Presales, Delivery, Finance, Legal, Sales Leader
   - AI-automatable field highlighting
 
-## Quick Start
+## Installation
 
 ### Prerequisites
 
-- Node.js 18+
-- Python 3.10+
-- Azure OpenAI resource with:
-  - GPT-4o deployment
-  - text-embedding-3-large deployment
+| Tool | Version | Install |
+|------|---------|---------|
+| Node.js | 18+ | https://nodejs.org |
+| Python | 3.10+ | https://python.org |
+| pip | any | `python -m ensurepip` |
+| Azure OpenAI | — | GPT-4o + text-embedding-3-large deployments required |
 
-### 1 — Backend
+### Step 1 — Clone
+
+```bash
+git clone https://github.com/schneutzi-81/bidcheck-app.git
+cd bidcheck-app
+```
+
+### Step 2 — Backend
 
 ```bash
 cd backend
 
-# Copy and fill in your Azure credentials
+# 1. Copy the example env file and fill in your Azure credentials
 cp .env.example .env
-# Edit .env with your AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, etc.
+```
 
-# Install Python dependencies
+Edit `backend/.env`:
+
+```ini
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_API_KEY=<your-api-key>
+AZURE_OPENAI_API_VERSION=2024-08-01-preview
+AZURE_OPENAI_DEPLOYMENT_GPT4O=gpt-4o
+AZURE_OPENAI_DEPLOYMENT_EMBEDDING=text-embedding-3-large
+DATABASE_URL=./bidcheck.db
+STORAGE_PATH=./storage
+INDEXES_PATH=./indexes
+```
+
+```bash
+# 2. Install Python dependencies
 pip install -r requirements.txt
 
-# Start the API server (port 8000)
+# 3. Start the API server
 uvicorn main:app --reload
 ```
 
-API docs available at `http://localhost:8000/docs`
+API available at `http://localhost:8000`
+Interactive docs at `http://localhost:8000/docs`
 
-### 2 — Frontend
+### Step 3 — Frontend
 
 ```bash
-# From the repo root
+# From the repo root (not backend/)
 npm install
-
-# Start dev server (uses backend at http://localhost:8000 by default)
 npm run dev
 ```
 
 App available at `http://localhost:5173`
 
-### 3 — End-to-End Test (optional)
+### Step 4 — Verify (optional)
 
 ```bash
 cd backend
-python test_e2e.py /path/to/sample.pdf
+python test_e2e.py /path/to/any-rfp.pdf
 ```
 
-Runs the full pipeline: create project → upload PDF → poll ready → Q&A + analysis → pricing → cleanup.
+Runs the full pipeline: health → create project → upload PDF → poll ready → Q&A + analysis + pricing → cleanup.
+AI steps (chat, gaps, risks, SOW, summary) require valid Azure credentials.
 
-### Build for Production
+---
+
+## Deploy to Azure
+
+### Option A — One-time manual deploy (`./deploy.sh`)
+
+Uses the [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) to provision all resources and deploy in a single command.
+
+**Prerequisites:**
 
 ```bash
-npm run build          # Frontend → dist/
-uvicorn main:app       # Backend — no --reload in production
+# Install azd
+winget install microsoft.azd          # Windows
+brew install azure/azd/azd            # macOS
+curl -fsSL https://aka.ms/install-azd.sh | bash  # Linux
+
+# Log in
+az login
+azd auth login
+```
+
+**Deploy:**
+
+```bash
+./deploy.sh
+```
+
+What it provisions automatically:
+
+| Resource | Purpose |
+|---|---|
+| Azure OpenAI (S0) | GPT-4o + text-embedding-3-large |
+| Azure Container Registry | Stores the backend Docker image |
+| Azure Container Apps | Runs the FastAPI backend |
+| Azure Files (5 GiB) | Persistent storage for SQLite + vector indexes |
+| Azure Static Web Apps | Hosts the React frontend (free tier, global CDN) |
+
+No credential copy-paste — Bicep wires the OpenAI API key directly into the Container App as a secret.
+
+**Tear down:**
+
+```bash
+azd down
+```
+
+---
+
+### Option B — Automated CI/CD (Azure Pipelines)
+
+Every push to `main` runs: test → build Docker image → deploy backend + frontend automatically.
+
+#### One-time setup in Azure DevOps
+
+**1. Create a Service Connection**
+
+`Project Settings → Service connections → New → Azure Resource Manager`
+- Name it exactly: `AzureServiceConnection`
+- Scope: your Azure subscription (grant access to the resource group)
+
+**2. Add Pipeline Variables**
+
+`Pipelines → your pipeline → Edit → Variables`
+
+| Variable | Example value | Secret? |
+|---|---|---|
+| `AZURE_RESOURCE_GROUP` | `rg-bidcheck-dev` | No |
+| `ACR_NAME` | `cr<token>` (your ACR name without `.azurecr.io`) | No |
+| `CONTAINER_APP_NAME` | `backend` | No |
+| `BACKEND_URL` | `https://backend.<region>.azurecontainerapps.io` | No |
+| `SWA_DEPLOYMENT_TOKEN` | _(from SWA → Manage deployment token)_ | **Yes** |
+
+**3. Create the pipeline**
+
+`Pipelines → New pipeline → GitHub → select repo → Existing Azure Pipelines YAML → azure-pipelines.yml`
+
+#### What the pipeline does
+
+```
+Push to main
+  │
+  ├─ Stage 1: Test
+  │     └─ Start backend, generate test PDF, run structural e2e
+  │
+  ├─ Stage 2: Build  (parallel)
+  │     ├─ Docker image → pushed to ACR  (tagged with git SHA)
+  │     └─ npm run build (VITE_API_URL injected) → artifact uploaded
+  │
+  └─ Stage 3: Deploy
+        ├─ az containerapp update → new image live in Container Apps
+        └─ Azure Static Web Apps deploy task → frontend live
 ```
 
 ---
@@ -97,6 +204,20 @@ uvicorn main:app       # Backend — no --reload in production
 
 ```
 bidcheck/
+├── azure-pipelines.yml       # CI/CD: test → build → deploy (Azure DevOps)
+├── azure.yaml                # azd project manifest
+├── deploy.sh                 # One-command manual deploy (azd up wrapper)
+├── staticwebapp.config.json  # SPA routing fallback for Static Web Apps
+├── infra/
+│   ├── main.bicep            # Subscription-scoped Bicep orchestration
+│   ├── main.bicepparam       # azd environment parameter bindings
+│   ├── abbreviations.json    # Resource naming prefixes
+│   └── core/
+│       ├── ai/cognitiveservices.bicep    # Azure OpenAI + model deployments
+│       ├── host/containerapp.bicep       # Container Apps + Azure Files volume
+│       ├── host/staticwebapp.bicep       # Static Web App (frontend)
+│       ├── storage/storageaccount.bicep  # Azure Files share (SQLite + indexes)
+│       └── security/registry.bicep       # Azure Container Registry
 ├── src/
 │   ├── App.jsx               # Main application + Go/No-Go scoring
 │   ├── api/client.js         # Fetch-based API client
@@ -104,12 +225,13 @@ bidcheck/
 │       ├── ProjectSetup.jsx  # Customer + project creation form
 │       └── AnalysisPanel.jsx # 6-tab AI analysis panel
 ├── backend/
+│   ├── Dockerfile            # Multi-stage Python 3.12 image
+│   ├── .env.example          # Environment variable template
 │   ├── main.py               # FastAPI entry point + CORS
 │   ├── config.py             # Settings (pydantic-settings)
 │   ├── models.py             # SQLModel DB tables
 │   ├── database.py           # SQLite engine + session dep
 │   ├── requirements.txt
-│   ├── .env.example
 │   ├── test_e2e.py           # End-to-end test script
 │   ├── routers/
 │   │   ├── projects.py       # Customer + Project CRUD
